@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 import os
 from keep_alive import keep_alive
 
+keep_alive()
+
 # ---------------- CONFIG ----------------
 TARGET_CHANNEL_ID = 1425720821477015553  # Replace with your channel ID
 
@@ -215,5 +217,4 @@ async def hello(ctx):
         await ctx.send("👋 Hello! I'm alive and only active in this channel.")
 
 # ---------------- RUN BOT ----------------
-keep_alive()
 bot.run(os.environ["TOKEN"])
