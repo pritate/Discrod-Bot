@@ -21,7 +21,7 @@ BOSS_NAMES = {"EG": "EG Mutant", "AVG": "Avenger", "TANK": "Tank"}
 CARD_NAMES = {"PCARD": "Purple Card", "BCARD": "Blue Card"}
 CARD_LOCATIONS = {
     "BS UP": "Bomb Shelter Upper",
-    "BS BOTTOM": "Bomb Shelter Bottom",
+    "BS BOT": "Bomb Shelter Bottom",
     "AP": "Airport",
     "HB": "Harbor",
     "NUC": "Nuclear Plant",
