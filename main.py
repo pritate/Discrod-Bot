@@ -4,9 +4,6 @@ import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import os
-from keep_alive import keep_alive
-
-keep_alive()
 
 # ---------------- CONFIG ----------------
 TARGET_CHANNEL_ID = 1425720821477015553  # Replace with your channel ID
