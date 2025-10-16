@@ -35,7 +35,8 @@ ROLE_TIMEZONES = {
     "MY": "Asia/Kuala_Lumpur",
     "RU": "Europe/Moscow",
     "US": "America/New_York",
-    "TH": "Asia/Bangkok"
+    "TH": "Asia/Bangkok",
+    "AU": "Australia/Brisbane"
 }
 
 # ---------------- TRACKING ----------------
