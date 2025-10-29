@@ -55,7 +55,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
-bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------------- REGEX / PARSING ----------------
 # Time pattern requires AM/PM (flexible spacing/case)
