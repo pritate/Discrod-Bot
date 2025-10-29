@@ -418,12 +418,12 @@ async def on_message(message: discord.Message):
         # see if loc_key resolves to a room short code
         loc_norm = loc_key.upper()
         # find matching room short code by comparing normalized values
-        for short, name in ROOM_NAMES.items():
-                NAME_ALT = {short, name.upper()}
+        for short, name in ROOM_NAMES.items():                
+            NAME_ALT = {short, name.upper()}
             if loc_norm == short or loc_norm == name.upper() or loc_norm in NAME_ALT:
                 category = "room"
                 key = short
-                break
+            break
         # else maybe user typed 'pcard' etc somewhere; leave it
 
     # If still no category but tokens include boss names, try that
