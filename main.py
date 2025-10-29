@@ -54,6 +54,7 @@ spawn_origin_time = {}      # (channel_id, spawn_key) -> original taken time (PH
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------------- REGEX / PARSING ----------------
