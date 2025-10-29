@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import os
 
 # ---------------- CONFIG ----------------
-ALLOWED_CHANNELS = [1425720821477015553, 1427263126989963264]  # put your two channel IDs here
+ALLOWED_CHANNELS = [1425720821477015553, 1427263126989963264]  # your two channel IDs
 PHT = ZoneInfo("Asia/Manila")
 
 ROOM_NAMES = {
@@ -367,6 +367,71 @@ async def clear_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ You need Manage Messages permission to use this command.", delete_after=6)
 
+# ---------------- HELP COMMAND ----------------
+@bot.command(name="help")
+async def help_cmd(ctx):
+    if ctx.channel.id not in ALLOWED_CHANNELS:
+        return
+    embed = discord.Embed(
+        title="🧭 Command Help — Timer Tracker Bot",
+        description="Here's a quick guide on how to use the bot effectively.",
+        color=GOLD
+    )
+    embed.add_field(
+        name="🎴 Accepted Keywords",
+        value=(
+            "**Cards:** PCARD, BCARD\n"
+            "**Rooms:** AP (Airport), HB (Harbor), BANDIT (Bandit Camp), BIO (Bio Lab), NUC (Nuclear Plant), MILI (Military Base)\n"
+            "**Bosses:** EG (EG Mutant), AVG (Avenger), TANK (Tank)"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="💬 Flexible Input Format",
+        value=(
+            "You can send inputs in **any order**:\n"
+            "`pcard nuc 12:30am`\n"
+            "`12:30am pcard nuc`\n"
+            "`nuc 12:30am bcard`\n"
+            "→ The bot will detect the type, location, and time automatically."
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🌍 Timezone Support",
+        value="The bot reads your timezone role automatically (PH, IND, MY, RU, US, TH, AU). If no role, defaults to PH.",
+        inline=False
+    )
+    embed.add_field(
+        name="🕓 Automatic Features",
+        value=(
+            "• **5-minute spawn warnings** before spawn.\n"
+            "• **Auto-cleanup** of expired messages after 5 mins.\n"
+            "• **Auto-extension** of card spawns by +30 minutes if not updated.\n"
+            "• **Per-channel spawn tracking** (each server/channel has its own timer list)."
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🧹 Clear Command",
+        value="`!clear <amount>` — Deletes recent messages (default: 20). Requires Manage Messages permission.",
+        inline=False
+    )
+    embed.add_field(
+        name="📖 Example Inputs",
+        value=(
+            "`12:00am pcard nuc`\n"
+            "`pcard bs up 11:30pm`\n"
+            "`eg 3:30pm`\n"
+            "`avg 2:45am`\n"
+            "`bio 5:00pm`\n"
+            "`mili 1:15am`"
+        ),
+        inline=False
+    )
+    embed.set_footer(text="Timers auto-delete after 5 minutes to prevent clutter.")
+    await ctx.send(embed=embed)
+
 # ---------------- MESSAGE HANDLER ----------------
 @bot.event
 async def on_message(message: discord.Message):
@@ -418,12 +483,12 @@ async def on_message(message: discord.Message):
         # see if loc_key resolves to a room short code
         loc_norm = loc_key.upper()
         # find matching room short code by comparing normalized values
-        for short, name in ROOM_NAMES.items():                
+        for short, name in ROOM_NAMES.items():
             NAME_ALT = {short, name.upper()}
             if loc_norm == short or loc_norm == name.upper() or loc_norm in NAME_ALT:
                 category = "room"
                 key = short
-            break
+                break
         # else maybe user typed 'pcard' etc somewhere; leave it
 
     # If still no category but tokens include boss names, try that
