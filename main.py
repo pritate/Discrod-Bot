@@ -18,7 +18,6 @@ ROOM_NAMES = {
     "BIO": "Bio-Research Lab",
     "NUC": "Nuclear Plant",
     "MILI": "Military Base",
-    # new locations
     "RB": "Rocket Base",
     "CRUDE": "Crude Oil Base",
     "BS SNOW": "Snow Mountain Bomb Shelter",
@@ -30,8 +29,9 @@ BOSS_NAMES = {
     "EG": "EG Mutant",
     "AVG": "Avenger",
     "TANK": "Tank",
-    "BN": "Bloodnest"  # new boss
+    "BN": "Bloodnest"
 }
+
 CARD_NAMES = {"PCARD": "Purple Card", "BCARD": "Blue Card"}
 
 CARD_LOCATIONS = {
@@ -45,7 +45,6 @@ CARD_LOCATIONS = {
     "MILI": "Military Base",
     "BIO": "Bio-Research Lab",
     "BANDIT": "Bandit Camp",
-    # new locations (same keys as ROOM_NAMES where applicable)
     "RB": "Rocket Base",
     "CRUDE": "Crude Oil Base",
     "BS SNOW": "Snow Mountain Bomb Shelter",
@@ -53,7 +52,6 @@ CARD_LOCATIONS = {
     "FACTORY": "Chemical Factory",
 }
 
-# timezone role mapping (role names must match these keys, case-insensitive)
 ROLE_TIMEZONES = {
     "PH": "Asia/Manila",
     "IND": "Asia/Kolkata",
@@ -65,13 +63,13 @@ ROLE_TIMEZONES = {
 }
 
 # ---------------- TRACKING ----------------
-user_sent_times = {}        # per-user posted times (by user_id -> key -> datetime)
-global_next_spawn = {}      # key: (channel_id, spawn_key) -> datetime (PHT)
-spawn_warned = set()        # set of (channel_id, spawn_key) that were warned
-upcoming_msg_id = {}        # channel_id -> message id for the tracker embed
-card_auto_extended = set()  # (channel_id, spawn_key) that were auto-extended
-spawn_origin_time = {}      # (channel_id, spawn_key) -> original taken time (PHT)
-last_spawn_record = {}      # (channel_id, spawn_key) -> last taken time for bosses/cards
+user_sent_times = {}        # per-user posted times
+global_next_spawn = {}      # (channel_id, spawn_key) -> datetime
+spawn_warned = set()        # warned spawns
+upcoming_msg_id = {}        # channel_id -> message id
+card_auto_extended = set()  # auto-extended BCARDs
+spawn_origin_time = {}      # original taken time (PHT)
+last_spawn_record = {}      # last taken time for bosses/cards
 
 # ---------------- BOT SETUP ----------------
 intents = discord.Intents.default()
@@ -80,15 +78,11 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ---------------- REGEX / PARSING ----------------
-# Time pattern requires AM/PM (flexible spacing/case)
 time_regex = re.compile(r"(?i)(\d{1,2}:\d{2}\s*(?:AM|PM))")
-# tokens regex for words (for matching locations / keywords)
 word_token = re.compile(r"([A-Za-z]+)")
 
-# synonyms / aliases map for locations and keywords (all uppercase for normalization)
 LOCATION_ALIASES = {
-    # Bomb shelter bottom should accept bs + bottom synonyms (user requested)
-    "BS": "BS BOT",        # default 'bs' => bottom (changed from previous BS UP)
+    "BS": "BS BOT",
     "BSUP": "BS UP",
     "BSUPPER": "BS UP",
     "BS BOT": "BS BOT",
@@ -97,7 +91,6 @@ LOCATION_ALIASES = {
     "BOTTOM": "BS BOT",
     "DOWN": "BS BOT",
     "BELOW": "BS BOT",
-    # standard locations
     "AP": "AP",
     "AIRPORT": "AP",
     "HB": "HB",
@@ -108,7 +101,6 @@ LOCATION_ALIASES = {
     "MILITARY": "MILI",
     "BIO": "BIO",
     "BANDIT": "BANDIT",
-    # new aliases / locations
     "RB": "RB",
     "ROCKET": "RB",
     "ROCKETBASE": "RB",
@@ -121,19 +113,15 @@ LOCATION_ALIASES = {
     "DOCK": "DOCK",
     "FACTORY": "FACTORY",
     "CHEMICALFACTORY": "FACTORY",
-    # small harbor: accept only SHB and its uppercase normalized token
     "SHB": "SHB",
-    # NOTE: do NOT map "SMALLHARBOR" by user request — they only want SHB accepted
 }
 
-# allowed keywords for boss or room detection (uppercase)
 ROOM_KEYS = set(ROOM_NAMES.keys()) | {v.upper() for v in ROOM_NAMES.values()}
 BOSS_KEYS = set(BOSS_NAMES.keys()) | {v.upper() for v in BOSS_NAMES.values()}
 CARD_KEYS = set(CARD_NAMES.keys()) | {v.upper() for v in CARD_NAMES.values()}
 
 # ---------------- HELPERS ----------------
 def get_member_timezone(member: discord.Member) -> ZoneInfo:
-    # check member roles for one matching ROLE_TIMEZONES (case-insensitive)
     for role in member.roles:
         key = role.name.upper()
         if key in ROLE_TIMEZONES:
@@ -141,28 +129,23 @@ def get_member_timezone(member: discord.Member) -> ZoneInfo:
     return PHT
 
 def parse_time_string_to_pht(time_str: str, user_tz: ZoneInfo) -> datetime | None:
-    """Parse a time string with AM/PM in user's timezone and return a timezone-aware dt in PHT.
-    This uses the user's provided time (hour:minute) and places it on the user's 'today' (or yesterday
-    if that time is after now in their timezone) — which is standard for taken-time parsing."""
+    """Fixes bug: uses the user-provided time and converts to PHT, rolling to next day if already past."""
     try:
         parsed = datetime.strptime(time_str.strip().upper(), "%I:%M %p")
     except ValueError:
         return None
+
     now_user = datetime.now(user_tz)
-    # place parsed time on today's date in user tz
     dt_user = now_user.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
-    # if the parsed time is in the future relative to now, assume it was from previous day (i.e., taken earlier)
-    if dt_user > now_user:
-        dt_user -= timedelta(days=1)
     dt_pht = dt_user.astimezone(PHT)
+
+    # If the time in PHT is already past, move to next day
+    if dt_pht < datetime.now(PHT):
+        dt_pht += timedelta(days=1)
     return dt_pht
 
 def calculate_next_spawn(taken_time: datetime, hours: float) -> datetime:
-    # hours may be fractional (2.5)
-    next_spawn = taken_time + timedelta(hours=hours)
-    if next_spawn < taken_time:
-        next_spawn += timedelta(days=1)
-    return next_spawn
+    return taken_time + timedelta(hours=hours)
 
 def unix_ts(dt: datetime) -> int:
     return int(dt.astimezone(timezone.utc).timestamp())
@@ -171,48 +154,30 @@ def normalize_token(tok: str) -> str:
     return re.sub(r'[^A-Za-z]', '', tok).upper()
 
 def find_time_keyword_location(message: str):
-    """
-    Flexible parser: extract (time_str or None), (type_key or None), (location_key or None)
-    Accepts any order. Returns tuple (time_str, type_key, location_key)
-    - time_str: matched 'HH:MM AM/PM' (string)
-    - type_key: one of CARD_KEYS or BOSS_KEYS or ROOM_KEYS (string)
-    - location_key: normalized key used for lookup (e.g. 'NUC' or 'BS BOT')
-    """
     s = message
-    # find time
     time_m = time_regex.search(s)
     time_str = time_m.group(1).upper() if time_m else None
-
-    # tokens (words)
     tokens = [normalize_token(t) for t in word_token.findall(s)]
     type_key = None
     location_key = None
 
-    # look for card keywords first (PCARD / BCARD)
     for t in tokens:
         if t in CARD_KEYS:
             type_key = t
             break
-
-    # look for boss keywords
     if not type_key:
         for t in tokens:
             if t in BOSS_KEYS:
                 type_key = t
                 break
-
-    # special boss alias: accept "BLOOD" as BN (user requested)
     if not type_key and "BLOOD" in tokens:
         type_key = "BN"
-
-    # look for room keys
     if not type_key:
         for t in tokens:
             if t in ROOM_KEYS:
                 type_key = t
                 break
 
-    # find location token(s) (try pairs first for things like "BS BOT" or "BS SNOW")
     for i in range(len(tokens)-1, -1, -1):
         two = (tokens[i-1] + " " + tokens[i]) if i-1 >= 0 else tokens[i]
         if two in LOCATION_ALIASES:
@@ -222,7 +187,6 @@ def find_time_keyword_location(message: str):
             location_key = LOCATION_ALIASES[tokens[i]]
             break
 
-    # normalize type_key: map full names to short codes where possible
     if type_key:
         tk = type_key
         rev_room = {v.upper(): k for k, v in ROOM_NAMES.items()}
@@ -231,11 +195,10 @@ def find_time_keyword_location(message: str):
             type_key = rev_room[tk]
         elif tk in rev_boss:
             type_key = rev_boss[tk]
-        # else leave as-is (caller checks membership)
 
     return time_str, type_key, location_key
 
-# ---------------- EMBED HELPERS (dark/gold theme) ----------------
+# ---------------- EMBED HELPERS ----------------
 GOLD = 0xD4AF37
 DARK = 0x0B0B0B
 
@@ -248,9 +211,7 @@ def build_embed(title: str, description: str, fields: dict, color: int = GOLD):
 
 def build_upcoming_embed(channel: discord.TextChannel):
     embed = discord.Embed(title=f"📅 Upcoming Spawns — {channel.name}", color=0x111111)
-    rooms = []
-    bosses = []
-    cards = []
+    rooms, bosses, cards = [], [], []
     now = datetime.now(PHT)
 
     for (cid, key), spawn_time in global_next_spawn.items():
@@ -274,16 +235,13 @@ def build_upcoming_embed(channel: discord.TextChannel):
     if cards:
         embed.add_field(name="🎴 Cards", value="\n".join(cards), inline=False)
 
-    # If nothing upcoming, show last spawns for bosses/cards if available
     if not rooms and not bosses and not cards:
         lines = []
         for (cid, key), last_taken in last_spawn_record.items():
             if cid != channel.id:
                 continue
-            # only include boss/card last spawns
             if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
                 tstr = last_taken.strftime("%I:%M %p") if last_taken else "Unknown"
-                # label resolution
                 if key in BOSS_NAMES:
                     label = BOSS_NAMES[key]
                 else:
@@ -297,7 +255,6 @@ def build_upcoming_embed(channel: discord.TextChannel):
 
 async def update_upcoming_message(channel: discord.TextChannel):
     embed = build_upcoming_embed(channel)
-    # send/edit persistent embed per channel
     if channel.id in upcoming_msg_id:
         try:
             msg = await channel.fetch_message(upcoming_msg_id[channel.id])
@@ -338,21 +295,17 @@ async def five_minute_warning():
 @tasks.loop(seconds=60)
 async def cleanup_expired_messages():
     now = datetime.now(PHT)
-    expired_by_channel = {}  # cid -> list of (key, spawned_at)
+    expired_by_channel = {}
     to_remove = []
     for (cid, key), spawn_time in list(global_next_spawn.items()):
-        # expiration intervals:
-        # rooms 2h, bosses 10m, cards: BCARD 2h30 (with extension), PCARD 3h (fixed)
         if key in ROOM_NAMES:
             expire = spawn_time + timedelta(hours=2)
         elif key in BOSS_NAMES:
             expire = spawn_time + timedelta(minutes=10)
         else:
-            # card: determine by prefix
             if key.startswith("PCARD"):
                 expire = spawn_time + timedelta(hours=3)
             else:
-                # BCARD default expiration before extension
                 expire = spawn_time + timedelta(hours=2, minutes=30)
         if now >= expire:
             expired_by_channel.setdefault(cid, []).append((key, spawn_origin_time.get((cid, key), spawn_time)))
@@ -365,7 +318,6 @@ async def cleanup_expired_messages():
         lines = []
         for key, origin in entries:
             spawned_str = origin.strftime("%I:%M %p") if origin else "Unknown"
-            # For bosses and cards we keep the last taken time in last_spawn_record for tracking
             if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
                 last_spawn_record[(cid, key)] = origin or spawn_origin_time.get((cid, key))
             lines.append(f"- {key.replace('_', ' ')} (Spawned at {spawned_str})")
@@ -373,7 +325,6 @@ async def cleanup_expired_messages():
         exp_msg = await channel.send(embed=embed)
         asyncio.create_task(delete_later(exp_msg, 300))
 
-    # cleanup data store (remove expired entries from active tracking)
     for item in to_remove:
         cid, key = item
         global_next_spawn.pop((cid, key), None)
@@ -386,18 +337,11 @@ async def cleanup_expired_messages():
 
 @tasks.loop(minutes=1)
 async def extend_card_time():
-    """
-    Auto-extend behavior:
-    - PCARD is fixed at 3 hours -> no auto-extension.
-    - BCARD: if it reaches its first spawn (2h30) and not updated, extend by +30min.
-    """
     now = datetime.now(PHT)
     for (cid, key), spawn_time in list(global_next_spawn.items()):
-        # only BCARD auto-extend (blue card)
         if key.startswith("BCARD"):
             if (cid, key) in card_auto_extended:
                 continue
-            # if now is at or just after the spawn_time (the moment 2h30 arrived)
             if now >= spawn_time and (now - spawn_time).total_seconds() < 120:
                 global_next_spawn[(cid, key)] = spawn_time + timedelta(minutes=30)
                 card_auto_extended.add((cid, key))
@@ -412,13 +356,13 @@ async def delete_later(msg: discord.Message, delay_seconds: int):
     except (discord.NotFound, discord.Forbidden):
         pass
 
-# ---------------- CLEAR COMMAND ----------------
+# ---------------- COMMANDS ----------------
 @bot.command(name="clear")
 @commands.has_permissions(manage_messages=True)
 async def clear_cmd(ctx, amount: int = 20):
     if ctx.channel.id not in ALLOWED_CHANNELS:
         return
-    await ctx.channel.purge(limit=amount + 1)  # +1 to include the command message
+    await ctx.channel.purge(limit=amount + 1)
     notice = await ctx.send(f"Cleared last {amount} messages.")
     await asyncio.sleep(5)
     await notice.delete()
@@ -428,12 +372,10 @@ async def clear_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ You need Manage Messages permission to use this command.", delete_after=6)
 
-# ---------------- HELP COMMAND ----------------
 @bot.command(name="help")
 async def help_cmd(ctx):
     if ctx.channel.id not in ALLOWED_CHANNELS:
         return
-    # build list strings from current mappings (so it stays accurate)
     rooms_list = ", ".join([f"{k} ({v})" for k, v in ROOM_NAMES.items()])
     cards_list = ", ".join([f"{k} ({v})" for k, v in CARD_NAMES.items()])
     bosses_list = ", ".join([f"{k} ({v})" for k, v in BOSS_NAMES.items()])
@@ -461,8 +403,7 @@ async def help_cmd(ctx):
             "`pcard rb 1:15am`\n"
             "`bcard crude 2:00pm`\n"
             "`eg 3:30pm`\n"
-            "`bn 4:00pm` (bloodnest)\n"
-            "The bot will detect the type, location, and time automatically."
+            "`bn 4:00pm`"
         ),
         inline=False
     )
@@ -486,7 +427,7 @@ async def help_cmd(ctx):
         value="`!clear <amount>` — Deletes recent messages (default: 20). Requires Manage Messages permission.",
         inline=False
     )
-    embed.set_footer(text="Timers auto-update and the confirmation messages auto-delete to keep channels clean.")
+    embed.set_footer(text="Timers auto-update and confirmation messages auto-delete.")
     await ctx.send(embed=embed)
 
 # ---------------- MESSAGE HANDLER ----------------
@@ -498,201 +439,58 @@ async def on_message(message: discord.Message):
     channel_id = message.channel.id
     user_tz = get_member_timezone(message.author)
     user_id = message.author.id
-    user_sent_times.setdefault(user_id, {})
-    updated = False
 
-    # flexible parse
-    time_str, type_key, loc_key = find_time_keyword_location(message.content)
-
-    # If nothing detected, just ignore and process commands
-    if not time_str and not type_key and not loc_key:
+    time_str, category, location = find_time_keyword_location(message.content)
+    if not category:
         await bot.process_commands(message)
         return
 
-    # Try to determine category and location properly
-    category = None
-    key = None
-    location_for_display = None
+    # Determine spawn key
+    if category in ROOM_NAMES:
+        spawn_key = category
+    elif category in BOSS_NAMES:
+        spawn_key = category
+    elif category.startswith("PCARD") or category.startswith("BCARD"):
+        spawn_key = f"{category}_{location}" if location else f"{category}_UNKNOWN"
+    else:
+        spawn_key = category
 
-    if type_key and type_key in CARD_KEYS:
-        category = "card"
-        card_type = type_key  # PCARD/BCARD
-    elif type_key and type_key in BOSS_KEYS:
-        category = "boss"
-        if type_key in BOSS_NAMES:
-            key = type_key
-        else:
-            rev = {v.upper(): k for k, v in BOSS_NAMES.items()}
-            key = rev.get(type_key, type_key)
-    elif type_key and type_key in ROOM_KEYS:
-        category = "room"
-        if type_key in ROOM_NAMES:
-            key = type_key
-        else:
-            rev = {v.upper(): k for k, v in ROOM_NAMES.items()}
-            key = rev.get(type_key, type_key)
-
-    # If no type_key but we have location that matches a room, assume room
-    if not category and loc_key:
-        loc_norm = loc_key.upper()
-        for short, name in ROOM_NAMES.items():
-            NAME_ALT = {short, name.upper()}
-            if loc_norm == short or loc_norm == name.upper() or loc_norm in NAME_ALT:
-                category = "room"
-                key = short
-                break
-
-    # If still no category but tokens include boss/room/card names, try that
-    if not category:
-        for t in re.findall(r"[A-Za-z]+", message.content):
-            T = t.upper()
-            if T in BOSS_NAMES:
-                category = "boss"
-                key = T
-                break
-            if T in ROOM_NAMES:
-                category = "room"
-                key = T
-                break
-            if T in CARD_NAMES:
-                category = "card"
-                card_type = T
-                break
-            # accept 'BLOOD' -> BN
-            if T == "BLOOD":
-                category = "boss"
-                key = "BN"
-                break
-
-    # Determine location_for_display for cards and rooms
-    if loc_key:
-        L = loc_key.upper()
-        if L in LOCATION_ALIASES:
-            mapped = LOCATION_ALIASES[L]
-            if mapped in CARD_LOCATIONS:
-                location_for_display = CARD_LOCATIONS[mapped]
-            elif mapped in ROOM_NAMES:
-                location_for_display = ROOM_NAMES[mapped]
-            else:
-                location_for_display = CARD_LOCATIONS.get(mapped, mapped)
-        else:
-            if L in CARD_LOCATIONS:
-                location_for_display = CARD_LOCATIONS[L]
-            elif L in ROOM_NAMES:
-                location_for_display = ROOM_NAMES[L]
-            else:
-                location_for_display = CARD_LOCATIONS.get(L) or ROOM_NAMES.get(L)
-
-    # If category is card but no explicit location found, attempt to find token that matches location names
-    if category == "card" and not location_for_display:
-        for tok in re.findall(r"[A-Za-z]+", message.content):
-            T = tok.upper()
-            if T in LOCATION_ALIASES:
-                mapped = LOCATION_ALIASES[T]
-                location_for_display = CARD_LOCATIONS.get(mapped, CARD_LOCATIONS.get(mapped))
-                break
-            if T in CARD_LOCATIONS:
-                location_for_display = CARD_LOCATIONS[T]
-                break
-
-    # Now we need time_str to compute taken_time (PHT)
+    # Determine taken time
     taken_time_pht = None
     if time_str:
-        # Use the actual time provided by the user (converted from user's timezone to PHT)
         taken_time_pht = parse_time_string_to_pht(time_str, user_tz)
-    # If time missing but category present, assume taken_time = now in user's tz
-    if not taken_time_pht and category in ("card", "room", "boss"):
+    if not taken_time_pht:
         now_user = datetime.now(user_tz)
         taken_time_pht = now_user.astimezone(PHT)
 
-    # If still no category recognized, bail
-    if not category:
-        await bot.process_commands(message)
-        return
+    # Determine duration
+    if spawn_key in ROOM_NAMES:
+        duration = 2
+    elif spawn_key in BOSS_NAMES:
+        duration = 6 if spawn_key != "BN" else 3
+    elif spawn_key.startswith("PCARD"):
+        duration = 3
+    elif spawn_key.startswith("BCARD"):
+        duration = 2.5
+    else:
+        duration = 2
 
-    # Build internal key name
-    if category == "boss":
-        spawn_key = key if key else "UNKNOWN_BOSS"
-    elif category == "room":
-        spawn_key = key if key else (next((k for k, v in ROOM_NAMES.items() if v == location_for_display), "UNKNOWN_ROOM"))
-    else:  # card
-        card_short = card_type if 'card_type' in locals() else "PCARD"
-        loc_label = (location_for_display or "Unknown").replace(" ", "")
-        spawn_key = f"{card_short}_{loc_label}"
+    next_spawn = calculate_next_spawn(taken_time_pht, duration)
+    global_next_spawn[(channel_id, spawn_key)] = next_spawn
+    spawn_origin_time[(channel_id, spawn_key)] = taken_time_pht
+    last_spawn_record[(channel_id, spawn_key)] = taken_time_pht
 
-    # Determine next_spawn based on rules
-    if category == "boss":
-        # special: Bloodnest BN -> 3 hours, otherwise 6 hours
-        if spawn_key == "BN" or spawn_key.upper() == "BN":
-            next_spawn = calculate_next_spawn(taken_time_pht, 3)
-        else:
-            next_spawn = calculate_next_spawn(taken_time_pht, 6)
-    elif category == "room":
-        next_spawn = calculate_next_spawn(taken_time_pht, 2)
-    else:  # card
-        # PCARD fixed to 3 hours, BCARD remains 2.5 (and BCARD may auto-extend)
-        if spawn_key.startswith("PCARD"):
-            next_spawn = calculate_next_spawn(taken_time_pht, 3)
-        else:
-            next_spawn = calculate_next_spawn(taken_time_pht, 2.5)
+    embed = build_embed(
+        "✅ Timer Updated",
+        f"{spawn_key.replace('_',' ')} registered by {message.author.display_name}",
+        {"Next Spawn": f"<t:{unix_ts(next_spawn)}:T> (<t:{unix_ts(next_spawn)}:R>)"},
+    )
+    confirmation_msg = await message.channel.send(embed=embed)
+    asyncio.create_task(delete_later(confirmation_msg, 20))
 
-    # Use channel-scoped key
-    channel_key = (channel_id, spawn_key)
-
-    # Duplicate checks: channel-scoped global and per-user
-    if channel_key in global_next_spawn and global_next_spawn[channel_key] == next_spawn:
-        try:
-            await message.delete()
-        except:
-            pass
-        await message.channel.send(f"⚠️ The next spawn for {spawn_key} at {next_spawn.strftime('%I:%M %p')} is already posted!", delete_after=6)
-        return
-
-    if spawn_key in user_sent_times.get(user_id, {}) and user_sent_times[user_id][spawn_key] == next_spawn:
-        try:
-            await message.delete()
-        except:
-            pass
-        await message.channel.send(f"⚠️ You already sent the same time for {spawn_key}.", delete_after=5)
-        return
-
-    # Save times
-    user_sent_times.setdefault(user_id, {})[spawn_key] = next_spawn
-    global_next_spawn[channel_key] = next_spawn
-    spawn_origin_time[channel_key] = taken_time_pht
-    # ensure card auto-extend flag reset
-    card_auto_extended.discard(channel_key)
-    spawn_warned.discard(channel_key)
-    # clear last_spawn_record for this spawn because it has been updated
-    last_spawn_record.pop((channel_id, spawn_key), None)
-
-    # send confirmation embed (auto-delete after 5m)
-    desc = f"{spawn_key.replace('_',' ')}"
-    fields = {
-        "Spawned At": taken_time_pht.strftime("%I:%M %p"),
-        "Next Spawn": f"<t:{unix_ts(next_spawn)}:T> (<t:{unix_ts(next_spawn)}:R>)"
-    }
-    if location_for_display:
-        fields["Location"] = location_for_display
-    confirm_embed = build_embed("✅ Timer Set", desc, fields, color=GOLD)
-    confirm_msg = await message.channel.send(embed=confirm_embed)
-    asyncio.create_task(delete_later(confirm_msg, 300))
-
-    updated = True
-    if updated:
-        try:
-            await message.delete()
-        except:
-            pass
-        await update_upcoming_message(message.channel)
-
+    await update_upcoming_message(message.channel)
     await bot.process_commands(message)
 
-# ---------------- FALLBACK COMMANDS ----------------
-@bot.command()
-async def hello(ctx):
-    if ctx.channel.id in ALLOWED_CHANNELS:
-        await ctx.send("👋 Hello! I'm alive and active in this channel.")
-
-# ---------------- RUN ----------------
-bot.run(os.environ["TOKEN"])
+# ---------------- RUN BOT ----------------
+TOKEN = os.getenv("DISCORD_TOKEN")  # put your token here if not using env
+bot.run(TOKEN)
