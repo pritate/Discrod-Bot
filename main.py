@@ -26,7 +26,12 @@ ROOM_NAMES = {
     "FACTORY": "Chemical Factory",
 }
 
-BOSS_NAMES = {"EG": "EG Mutant", "AVG": "Avenger", "TANK": "Tank"}
+BOSS_NAMES = {
+    "EG": "EG Mutant",
+    "AVG": "Avenger",
+    "TANK": "Tank",
+    "BN": "Bloodnest"  # new boss
+}
 CARD_NAMES = {"PCARD": "Purple Card", "BCARD": "Blue Card"}
 
 CARD_LOCATIONS = {
@@ -66,6 +71,7 @@ spawn_warned = set()        # set of (channel_id, spawn_key) that were warned
 upcoming_msg_id = {}        # channel_id -> message id for the tracker embed
 card_auto_extended = set()  # (channel_id, spawn_key) that were auto-extended
 spawn_origin_time = {}      # (channel_id, spawn_key) -> original taken time (PHT)
+last_spawn_record = {}      # (channel_id, spawn_key) -> last taken time for bosses/cards
 
 # ---------------- BOT SETUP ----------------
 intents = discord.Intents.default()
@@ -81,14 +87,17 @@ word_token = re.compile(r"([A-Za-z]+)")
 
 # synonyms / aliases map for locations and keywords (all uppercase for normalization)
 LOCATION_ALIASES = {
-    # old aliases / defaults
-    "BS": "BS UP",        # if user says only 'bs' default to BS UP
+    # Bomb shelter bottom should accept bs + bottom synonyms (user requested)
+    "BS": "BS BOT",        # default 'bs' => bottom (changed from previous BS UP)
     "BSUP": "BS UP",
     "BSUPPER": "BS UP",
     "BS BOT": "BS BOT",
     "BSBOT": "BS BOT",
     "BOT": "BS BOT",
     "BOTTOM": "BS BOT",
+    "DOWN": "BS BOT",
+    "BELOW": "BS BOT",
+    # standard locations
     "AP": "AP",
     "AIRPORT": "AP",
     "HB": "HB",
@@ -112,9 +121,9 @@ LOCATION_ALIASES = {
     "DOCK": "DOCK",
     "FACTORY": "FACTORY",
     "CHEMICALFACTORY": "FACTORY",
-    # small harbor must be 'SHB' only (user requested only accept shb)
+    # small harbor: accept only SHB and its uppercase normalized token
     "SHB": "SHB",
-    "SMALLHARBOR": "SHB",
+    # NOTE: do NOT map "SMALLHARBOR" by user request — they only want SHB accepted
 }
 
 # allowed keywords for boss or room detection (uppercase)
@@ -165,7 +174,7 @@ def find_time_keyword_location(message: str):
     Accepts any order. Returns tuple (time_str, type_key, location_key)
     - time_str: matched 'HH:MM AM/PM' (string)
     - type_key: one of CARD_KEYS or BOSS_KEYS or ROOM_KEYS (string)
-    - location_key: normalized key used for lookup (e.g. 'NUC' or 'BS UP')
+    - location_key: normalized key used for lookup (e.g. 'NUC' or 'BS BOT')
     """
     s = message
     # find time
@@ -190,6 +199,10 @@ def find_time_keyword_location(message: str):
                 type_key = t
                 break
 
+    # special boss alias: accept "BLOOD" as BN (user requested)
+    if not type_key and "BLOOD" in tokens:
+        type_key = "BN"
+
     # look for room keys
     if not type_key:
         for t in tokens:
@@ -197,7 +210,7 @@ def find_time_keyword_location(message: str):
                 type_key = t
                 break
 
-    # find location token(s) (try pairs first for "BS UP" style)
+    # find location token(s) (try pairs first for things like "BS BOT" or "BS SNOW")
     for i in range(len(tokens)-1, -1, -1):
         two = (tokens[i-1] + " " + tokens[i]) if i-1 >= 0 else tokens[i]
         if two in LOCATION_ALIASES:
@@ -258,8 +271,22 @@ def build_upcoming_embed(channel: discord.TextChannel):
         embed.add_field(name="🛡️ Bosses", value="\n".join(bosses), inline=False)
     if cards:
         embed.add_field(name="🎴 Cards", value="\n".join(cards), inline=False)
+
+    # If nothing upcoming, show last spawns for bosses/cards if available
     if not rooms and not bosses and not cards:
-        embed.description = "No upcoming spawns tracked."
+        lines = []
+        for (cid, key), last_taken in last_spawn_record.items():
+            if cid != channel.id:
+                continue
+            # only include boss/card last spawns
+            if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
+                tstr = last_taken.strftime("%I:%M %p") if last_taken else "Unknown"
+                label = (BOSS_NAMES.get(key) or CARD_NAMES.get(key.split("_", 1)[0], key))
+                lines.append(f"- {label} ({key.replace('_',' ')}) — Last Spawned at {tstr}")
+        if lines:
+            embed.add_field(name="🕰️ Last Spawns (expired)", value="\n".join(lines), inline=False)
+        else:
+            embed.description = "No upcoming spawns tracked."
     return embed
 
 async def update_upcoming_message(channel: discord.TextChannel):
@@ -308,13 +335,19 @@ async def cleanup_expired_messages():
     expired_by_channel = {}  # cid -> list of (key, spawned_at)
     to_remove = []
     for (cid, key), spawn_time in list(global_next_spawn.items()):
-        # expiration intervals: rooms 2h, bosses 10m, cards 2h30 (but extension handled elsewhere)
+        # expiration intervals:
+        # rooms 2h, bosses 10m, cards: BCARD 2h30 (with extension), PCARD 3h (fixed)
         if key in ROOM_NAMES:
             expire = spawn_time + timedelta(hours=2)
         elif key in BOSS_NAMES:
             expire = spawn_time + timedelta(minutes=10)
         else:
-            expire = spawn_time + timedelta(minutes=30)
+            # card: determine by prefix
+            if key.startswith("PCARD"):
+                expire = spawn_time + timedelta(hours=3)
+            else:
+                # BCARD default expiration before extension
+                expire = spawn_time + timedelta(hours=2, minutes=30)
         if now >= expire:
             expired_by_channel.setdefault(cid, []).append((key, spawn_origin_time.get((cid, key), spawn_time)))
             to_remove.append((cid, key))
@@ -326,11 +359,15 @@ async def cleanup_expired_messages():
         lines = []
         for key, origin in entries:
             spawned_str = origin.strftime("%I:%M %p") if origin else "Unknown"
+            # For bosses and cards we keep the last taken time in last_spawn_record for tracking
+            if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
+                last_spawn_record[(cid, key)] = origin or spawn_time
             lines.append(f"- {key.replace('_', ' ')} (Spawned at {spawned_str})")
         embed = build_embed("❌ Expired Spawns", "The following spawns expired (no update):", {"Expired": "\n".join(lines)}, color=0xE74C3C)
         exp_msg = await channel.send(embed=embed)
         asyncio.create_task(delete_later(exp_msg, 300))
 
+    # cleanup data store (remove expired entries from active tracking)
     for item in to_remove:
         cid, key = item
         global_next_spawn.pop((cid, key), None)
@@ -343,9 +380,15 @@ async def cleanup_expired_messages():
 
 @tasks.loop(minutes=1)
 async def extend_card_time():
+    """
+    Auto-extend behavior:
+    - PCARD is fixed at 3 hours -> no auto-extension.
+    - BCARD: if it reaches its first spawn (2h30) and not updated, extend by +30min.
+    """
     now = datetime.now(PHT)
     for (cid, key), spawn_time in list(global_next_spawn.items()):
-        if key.startswith("PCARD") or key.startswith("BCARD"):
+        # only BCARD auto-extend (blue card)
+        if key.startswith("BCARD"):
             if (cid, key) in card_auto_extended:
                 continue
             # if now is at or just after the spawn_time (the moment 2h30 arrived)
@@ -409,8 +452,21 @@ async def help_cmd(ctx):
             "You can send inputs in **any order**. Examples:\n"
             "`pcard nuc 12:30am`\n"
             "`12:30am pcard nuc`\n"
-            "`nuc 12:30am bcard`\n"
+            "`pcard rb 1:15am`\n"
+            "`bcard crude 2:00pm`\n"
+            "`eg 3:30pm`\n"
+            "`bn 4:00pm` (bloodnest)\n"
             "The bot will detect the type, location, and time automatically."
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="⏱️ Timers",
+        value=(
+            "• **PCARD (Purple Card)** — fixed **3 hours**.\n"
+            "• **BCARD (Blue Card)** — **2.5 hours** (auto-extends +30m if not updated).\n"
+            "• **Rooms** — **2 hours**.\n"
+            "• **Bosses** — **6 hours**, except **Bloodnest (BN)** — **3 hours**."
         ),
         inline=False
     )
@@ -420,32 +476,8 @@ async def help_cmd(ctx):
         inline=False
     )
     embed.add_field(
-        name="🕓 Automatic Features",
-        value=(
-            "• **5-minute spawn warnings** before spawn.\n"
-            "• **Auto-cleanup** of expired messages after expiration.\n"
-            "• **Auto-extension** of card spawns by +30 minutes if not updated.\n"
-            "• **Per-channel spawn tracking** (each server/channel has its own timer list)."
-        ),
-        inline=False
-    )
-    embed.add_field(
         name="🧹 Clear Command",
         value="`!clear <amount>` — Deletes recent messages (default: 20). Requires Manage Messages permission.",
-        inline=False
-    )
-    embed.add_field(
-        name="📖 Example Inputs",
-        value=(
-            "`12:00am pcard nuc`\n"
-            "`pcard bs up 11:30pm`\n"
-            "`pcard rb 1:15am`\n"
-            "`bcard crude 2:00pm`\n"
-            "`eg 3:30pm`\n"
-            "`avg 2:45am`\n"
-            "`bio 5:00pm`\n"
-            "`shb 1:15am`"
-        ),
         inline=False
     )
     embed.set_footer(text="Timers auto-update and the confirmation messages auto-delete to keep channels clean.")
@@ -520,6 +552,11 @@ async def on_message(message: discord.Message):
                 category = "card"
                 card_type = T
                 break
+            # accept 'BLOOD' -> BN
+            if T == "BLOOD":
+                category = "boss"
+                key = "BN"
+                break
 
     # Determine location_for_display for cards and rooms
     if loc_key:
@@ -578,11 +615,19 @@ async def on_message(message: discord.Message):
 
     # Determine next_spawn based on rules
     if category == "boss":
-        next_spawn = calculate_next_spawn(taken_time_pht, 6)
+        # special: Bloodnest BN -> 3 hours, otherwise 6 hours
+        if spawn_key == "BN":
+            next_spawn = calculate_next_spawn(taken_time_pht, 3)
+        else:
+            next_spawn = calculate_next_spawn(taken_time_pht, 6)
     elif category == "room":
         next_spawn = calculate_next_spawn(taken_time_pht, 2)
-    else:  # card (2.5 hours)
-        next_spawn = calculate_next_spawn(taken_time_pht, 2.5)
+    else:  # card
+        # PCARD fixed to 3 hours, BCARD remains 2.5 (and BCARD may auto-extend)
+        if spawn_key.startswith("PCARD"):
+            next_spawn = calculate_next_spawn(taken_time_pht, 3)
+        else:
+            next_spawn = calculate_next_spawn(taken_time_pht, 2.5)
 
     # Use channel-scoped key
     channel_key = (channel_id, spawn_key)
@@ -611,6 +656,8 @@ async def on_message(message: discord.Message):
     # ensure card auto-extend flag reset
     card_auto_extended.discard(channel_key)
     spawn_warned.discard(channel_key)
+    # clear last_spawn_record for this spawn because it has been updated
+    last_spawn_record.pop((channel_id, spawn_key), None)
 
     # send confirmation embed (auto-delete after 5m)
     desc = f"{spawn_key.replace('_',' ')}"
