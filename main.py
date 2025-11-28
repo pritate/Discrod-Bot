@@ -473,18 +473,23 @@ async def on_message(message: discord.Message):
         now_user = datetime.now(user_tz)
         taken_time_pht = now_user.astimezone(PHT)
 
-    if spawn_key in ROOM_NAMES:
-        duration = 2
-    elif spawn_key in BOSS_NAMES:
-        duration = 6 if spawn_key != "BN" else 3
-    elif spawn_key.startswith("PCARD"):
-        duration = 3
-    elif spawn_key.startswith("BCARD"):
-        duration = 2.5
-    else:
-        duration = 2
+    # Determine duration
+if spawn_key in ROOM_NAMES:
+    duration_hours = 2
+elif spawn_key in BOSS_NAMES:
+    duration_hours = 6 if spawn_key != "BN" else 3
+elif spawn_key.startswith("PCARD"):
+    duration_hours = 3
+elif spawn_key.startswith("BCARD"):
+    duration_hours = 2.5
+else:
+    duration_hours = 2
 
-    next_spawn = calculate_next_spawn(taken_time_pht, duration)
+# If user typed time, use it; otherwise now
+taken_time_pht = parse_time_string_to_pht(time_str, user_tz) if time_str else datetime.now(PHT)
+
+# Correct next spawn calculation
+next_spawn = taken_time_pht + timedelta(hours=duration_hours)
     global_next_spawn[(channel_id, spawn_key)] = next_spawn
     spawn_origin_time[(channel_id, spawn_key)] = taken_time_pht
     last_spawn_record[(channel_id, spawn_key)] = taken_time_pht
