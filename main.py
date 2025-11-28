@@ -141,7 +141,9 @@ def get_member_timezone(member: discord.Member) -> ZoneInfo:
     return PHT
 
 def parse_time_string_to_pht(time_str: str, user_tz: ZoneInfo) -> datetime | None:
-    """Parse a time string with AM/PM in user's timezone and return a timezone-aware dt in PHT."""
+    """Parse a time string with AM/PM in user's timezone and return a timezone-aware dt in PHT.
+    This uses the user's provided time (hour:minute) and places it on the user's 'today' (or yesterday
+    if that time is after now in their timezone) — which is standard for taken-time parsing."""
     try:
         parsed = datetime.strptime(time_str.strip().upper(), "%I:%M %p")
     except ValueError:
@@ -149,7 +151,7 @@ def parse_time_string_to_pht(time_str: str, user_tz: ZoneInfo) -> datetime | Non
     now_user = datetime.now(user_tz)
     # place parsed time on today's date in user tz
     dt_user = now_user.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
-    # if input is in the future (later today), assume they meant earlier (taken) -> treat as previous day
+    # if the parsed time is in the future relative to now, assume it was from previous day (i.e., taken earlier)
     if dt_user > now_user:
         dt_user -= timedelta(days=1)
     dt_pht = dt_user.astimezone(PHT)
@@ -281,7 +283,11 @@ def build_upcoming_embed(channel: discord.TextChannel):
             # only include boss/card last spawns
             if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
                 tstr = last_taken.strftime("%I:%M %p") if last_taken else "Unknown"
-                label = (BOSS_NAMES.get(key) or CARD_NAMES.get(key.split("_", 1)[0], key))
+                # label resolution
+                if key in BOSS_NAMES:
+                    label = BOSS_NAMES[key]
+                else:
+                    label = CARD_NAMES.get(key.split("_", 1)[0], key)
                 lines.append(f"- {label} ({key.replace('_',' ')}) — Last Spawned at {tstr}")
         if lines:
             embed.add_field(name="🕰️ Last Spawns (expired)", value="\n".join(lines), inline=False)
@@ -361,7 +367,7 @@ async def cleanup_expired_messages():
             spawned_str = origin.strftime("%I:%M %p") if origin else "Unknown"
             # For bosses and cards we keep the last taken time in last_spawn_record for tracking
             if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
-                last_spawn_record[(cid, key)] = origin or spawn_time
+                last_spawn_record[(cid, key)] = origin or spawn_origin_time.get((cid, key))
             lines.append(f"- {key.replace('_', ' ')} (Spawned at {spawned_str})")
         embed = build_embed("❌ Expired Spawns", "The following spawns expired (no update):", {"Expired": "\n".join(lines)}, color=0xE74C3C)
         exp_msg = await channel.send(embed=embed)
@@ -592,6 +598,7 @@ async def on_message(message: discord.Message):
     # Now we need time_str to compute taken_time (PHT)
     taken_time_pht = None
     if time_str:
+        # Use the actual time provided by the user (converted from user's timezone to PHT)
         taken_time_pht = parse_time_string_to_pht(time_str, user_tz)
     # If time missing but category present, assume taken_time = now in user's tz
     if not taken_time_pht and category in ("card", "room", "boss"):
@@ -616,7 +623,7 @@ async def on_message(message: discord.Message):
     # Determine next_spawn based on rules
     if category == "boss":
         # special: Bloodnest BN -> 3 hours, otherwise 6 hours
-        if spawn_key == "BN":
+        if spawn_key == "BN" or spawn_key.upper() == "BN":
             next_spawn = calculate_next_spawn(taken_time_pht, 3)
         else:
             next_spawn = calculate_next_spawn(taken_time_pht, 6)
