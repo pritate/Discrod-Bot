@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import os
 
 # ---------------- CONFIG ----------------
-ALLOWED_CHANNELS = [1425720821477015553, 1427263126989963264]
+ALLOWED_CHANNELS = [1425720821477015553, 1427263126989963264]  # your two channel IDs
 PHT = ZoneInfo("Asia/Manila")
 
 ROOM_NAMES = {
@@ -63,13 +63,13 @@ ROLE_TIMEZONES = {
 }
 
 # ---------------- TRACKING ----------------
-user_sent_times = {}
-global_next_spawn = {}
-spawn_warned = set()
-upcoming_msg_id = {}
-card_auto_extended = set()
-spawn_origin_time = {}
-last_spawn_record = {}
+user_sent_times = {}        # per-user posted times
+global_next_spawn = {}      # (channel_id, spawn_key) -> datetime
+spawn_warned = set()        # warned spawns
+upcoming_msg_id = {}        # channel_id -> message id
+card_auto_extended = set()  # auto-extended BCARDs
+spawn_origin_time = {}      # original taken time (PHT)
+last_spawn_record = {}      # last taken time for bosses/cards
 
 # ---------------- BOT SETUP ----------------
 intents = discord.Intents.default()
@@ -138,15 +138,10 @@ def parse_time_string_to_pht(time_str: str, user_tz: ZoneInfo) -> datetime | Non
     dt_user = now_user.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
     dt_pht = dt_user.astimezone(PHT)
 
+    # If the time in PHT is already past, move to next day
     if dt_pht < datetime.now(PHT):
         dt_pht += timedelta(days=1)
     return dt_pht
-
-def calculate_next_spawn(taken_time: datetime, hours: float) -> datetime:
-    return taken_time + timedelta(hours=hours)
-
-def unix_ts(dt: datetime) -> int:
-    return int(dt.astimezone(timezone.utc).timestamp())
 
 def normalize_token(tok: str) -> str:
     return re.sub(r'[^A-Za-z]', '', tok).upper()
@@ -196,19 +191,6 @@ def find_time_keyword_location(message: str):
 
     return time_str, type_key, location_key
 
-def human_readable_delta(td: timedelta) -> str:
-    total_seconds = int(td.total_seconds())
-    if total_seconds < 0:
-        return "Expired"
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    parts = []
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0 or hours == 0:
-        parts.append(f"{minutes}m")
-    return " ".join(parts)
-
 # ---------------- EMBED HELPERS ----------------
 GOLD = 0xD4AF37
 DARK = 0x0B0B0B
@@ -220,25 +202,27 @@ def build_embed(title: str, description: str, fields: dict, color: int = GOLD):
     embed.timestamp = datetime.now(tz=timezone.utc)
     return embed
 
+def unix_ts(dt: datetime) -> int:
+    return int(dt.astimezone(timezone.utc).timestamp())
+
 def build_upcoming_embed(channel: discord.TextChannel):
     embed = discord.Embed(title=f"📅 Upcoming Spawns — {channel.name}", color=0x111111)
     rooms, bosses, cards = [], [], []
-    now = datetime.now(PHT)
 
+    now = datetime.now(PHT)
     for (cid, key), spawn_time in global_next_spawn.items():
         if cid != channel.id:
             continue
-        delta_str = human_readable_delta(spawn_time - now)
         ts = unix_ts(spawn_time)
         if key in ROOM_NAMES:
-            rooms.append(f"- {ROOM_NAMES[key]} — <t:{ts}:T> (in {delta_str})")
+            rooms.append(f"- {ROOM_NAMES[key]} — <t:{ts}:T> (<t:{ts}:R>)")
         elif key in BOSS_NAMES:
-            bosses.append(f"- {BOSS_NAMES[key]} — <t:{ts}:T> (in {delta_str})")
+            bosses.append(f"- {BOSS_NAMES[key]} — <t:{ts}:T> (<t:{ts}:R>)")
         elif key.startswith("PCARD") or key.startswith("BCARD"):
             parts = key.split("_", 1)
             type_k = parts[0]
             location = parts[1] if len(parts) > 1 else "Unknown"
-            cards.append(f"- {CARD_NAMES.get(type_k, type_k)} ({location}) — <t:{ts}:T> (in {delta_str})")
+            cards.append(f"- {CARD_NAMES.get(type_k, type_k)} ({location}) — <t:{ts}:T> (<t:{ts}:R>)")
 
     if rooms:
         embed.add_field(name="🏠 Rooms", value="\n".join(rooms), inline=False)
@@ -248,21 +232,7 @@ def build_upcoming_embed(channel: discord.TextChannel):
         embed.add_field(name="🎴 Cards", value="\n".join(cards), inline=False)
 
     if not rooms and not bosses and not cards:
-        lines = []
-        for (cid, key), last_taken in last_spawn_record.items():
-            if cid != channel.id:
-                continue
-            if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
-                tstr = last_taken.strftime("%I:%M %p") if last_taken else "Unknown"
-                if key in BOSS_NAMES:
-                    label = BOSS_NAMES[key]
-                else:
-                    label = CARD_NAMES.get(key.split("_", 1)[0], key)
-                lines.append(f"- {label} ({key.replace('_',' ')}) — Last Spawned at {tstr}")
-        if lines:
-            embed.add_field(name="🕰️ Last Spawns (expired)", value="\n".join(lines), inline=False)
-        else:
-            embed.description = "No upcoming spawns tracked."
+        embed.description = "No upcoming spawns tracked."
     return embed
 
 async def update_upcoming_message(channel: discord.TextChannel):
@@ -457,6 +427,7 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
+    # Determine spawn key
     if category in ROOM_NAMES:
         spawn_key = category
     elif category in BOSS_NAMES:
@@ -466,6 +437,7 @@ async def on_message(message: discord.Message):
     else:
         spawn_key = category
 
+    # Determine taken time
     taken_time_pht = None
     if time_str:
         taken_time_pht = parse_time_string_to_pht(time_str, user_tz)
@@ -474,7 +446,7 @@ async def on_message(message: discord.Message):
         taken_time_pht = now_user.astimezone(PHT)
 
     # Determine duration
-    if spawn_key in ROOM_NAMES:     
+    if spawn_key in ROOM_NAMES:
         duration_hours = 2
     elif spawn_key in BOSS_NAMES:
         duration_hours = 6 if spawn_key != "BN" else 3
@@ -485,20 +457,20 @@ async def on_message(message: discord.Message):
     else:
         duration_hours = 2
 
-# If user typed time, use it; otherwise now
-    taken_time_pht = parse_time_string_to_pht(time_str, user_tz) if time_str else datetime.now(PHT)
-
-# Correct next spawn calculation
+    # Calculate next spawn
     next_spawn = taken_time_pht + timedelta(hours=duration_hours)
+    # Ensure next_spawn is not in the past
+    if next_spawn < datetime.now(PHT):
+        next_spawn += timedelta(days=1)
+
     global_next_spawn[(channel_id, spawn_key)] = next_spawn
     spawn_origin_time[(channel_id, spawn_key)] = taken_time_pht
     last_spawn_record[(channel_id, spawn_key)] = taken_time_pht
 
-    delta_str = human_readable_delta(next_spawn - datetime.now(PHT))
     embed = build_embed(
         "✅ Timer Updated",
         f"{spawn_key.replace('_',' ')} registered by {message.author.display_name}",
-        {"Next Spawn": f"<t:{unix_ts(next_spawn)}:T> (in {delta_str})"},
+        {"Next Spawn": f"<t:{unix_ts(next_spawn)}:T> (<t:{unix_ts(next_spawn)}:R>)"},
     )
     confirmation_msg = await message.channel.send(embed=embed)
     asyncio.create_task(delete_later(confirmation_msg, 20))
