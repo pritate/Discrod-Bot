@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import os
 
 # ---------------- CONFIG ----------------
-ALLOWED_CHANNELS = [1425720821477015553, 1427263126989963264]  # your two channel IDs
+ALLOWED_CHANNELS = [1425720821477015553, 1427263126989963264]
 PHT = ZoneInfo("Asia/Manila")
 
 ROOM_NAMES = {
@@ -63,13 +63,13 @@ ROLE_TIMEZONES = {
 }
 
 # ---------------- TRACKING ----------------
-user_sent_times = {}        # per-user posted times
-global_next_spawn = {}      # (channel_id, spawn_key) -> datetime
-spawn_warned = set()        # warned spawns
-upcoming_msg_id = {}        # channel_id -> message id
-card_auto_extended = set()  # auto-extended BCARDs
-spawn_origin_time = {}      # original taken time (PHT)
-last_spawn_record = {}      # last taken time for bosses/cards
+user_sent_times = {}
+global_next_spawn = {}
+spawn_warned = set()
+upcoming_msg_id = {}
+card_auto_extended = set()
+spawn_origin_time = {}
+last_spawn_record = {}
 
 # ---------------- BOT SETUP ----------------
 intents = discord.Intents.default()
@@ -196,25 +196,22 @@ def find_time_keyword_location(message: str):
 
     return time_str, type_key, location_key
 
+def human_readable_delta(td: timedelta) -> str:
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 0:
+        return "Expired"
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0 or hours == 0:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
 # ---------------- EMBED HELPERS ----------------
 GOLD = 0xD4AF37
 DARK = 0x0B0B0B
-
-def format_remaining_time(target: datetime, now: datetime) -> str:
-    delta = target - now
-    if delta.total_seconds() <= 0:
-        return "now"
-    days = delta.days
-    hours = delta.seconds // 3600
-    minutes = (delta.seconds % 3600) // 60
-    parts = []
-    if days > 0:
-        parts.append(f"{days}d")
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-    return "in " + " ".join(parts)
 
 def build_embed(title: str, description: str, fields: dict, color: int = GOLD):
     embed = discord.Embed(title=title, description=description, color=color)
@@ -231,17 +228,17 @@ def build_upcoming_embed(channel: discord.TextChannel):
     for (cid, key), spawn_time in global_next_spawn.items():
         if cid != channel.id:
             continue
-        remaining_str = format_remaining_time(spawn_time, now)
+        delta_str = human_readable_delta(spawn_time - now)
         ts = unix_ts(spawn_time)
         if key in ROOM_NAMES:
-            rooms.append(f"- {ROOM_NAMES[key]} — <t:{ts}:T> ({remaining_str})")
+            rooms.append(f"- {ROOM_NAMES[key]} — <t:{ts}:T> (in {delta_str})")
         elif key in BOSS_NAMES:
-            bosses.append(f"- {BOSS_NAMES[key]} — <t:{ts}:T> ({remaining_str})")
+            bosses.append(f"- {BOSS_NAMES[key]} — <t:{ts}:T> (in {delta_str})")
         elif key.startswith("PCARD") or key.startswith("BCARD"):
             parts = key.split("_", 1)
             type_k = parts[0]
             location = parts[1] if len(parts) > 1 else "Unknown"
-            cards.append(f"- {CARD_NAMES.get(type_k, type_k)} ({location}) — <t:{ts}:T> ({remaining_str})")
+            cards.append(f"- {CARD_NAMES.get(type_k, type_k)} ({location}) — <t:{ts}:T> (in {delta_str})")
 
     if rooms:
         embed.add_field(name="🏠 Rooms", value="\n".join(rooms), inline=False)
@@ -251,7 +248,21 @@ def build_upcoming_embed(channel: discord.TextChannel):
         embed.add_field(name="🎴 Cards", value="\n".join(cards), inline=False)
 
     if not rooms and not bosses and not cards:
-        embed.description = "No upcoming spawns tracked."
+        lines = []
+        for (cid, key), last_taken in last_spawn_record.items():
+            if cid != channel.id:
+                continue
+            if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
+                tstr = last_taken.strftime("%I:%M %p") if last_taken else "Unknown"
+                if key in BOSS_NAMES:
+                    label = BOSS_NAMES[key]
+                else:
+                    label = CARD_NAMES.get(key.split("_", 1)[0], key)
+                lines.append(f"- {label} ({key.replace('_',' ')}) — Last Spawned at {tstr}")
+        if lines:
+            embed.add_field(name="🕰️ Last Spawns (expired)", value="\n".join(lines), inline=False)
+        else:
+            embed.description = "No upcoming spawns tracked."
     return embed
 
 async def update_upcoming_message(channel: discord.TextChannel):
@@ -285,18 +296,210 @@ async def five_minute_warning():
             channel = bot.get_channel(cid)
             if not channel:
                 continue
-            remaining_str = format_remaining_time(spawn_time, now)
             title = "⚠️ Spawn Incoming"
             desc = f"**{key.replace('_', ' ')}** will spawn soon."
-            fields = {"ETA": remaining_str}
+            fields = {"ETA": f"<t:{unix_ts(spawn_time)}:R>"}
             embed = build_embed(title, desc, fields, color=GOLD)
             warn_msg = await channel.send(content="@everyone", embed=embed)
             spawn_warned.add((cid, key))
             asyncio.create_task(delete_later(warn_msg, 300))
 
-# ---- rest of your loops and commands remain unchanged ----
-# Keep extend_card_time, cleanup_expired_messages, on_message, help, clear etc.
-# Just make sure to replace all `<t:...:R>` with `format_remaining_time()` when you want "in Xh Ym"
+@tasks.loop(seconds=60)
+async def cleanup_expired_messages():
+    now = datetime.now(PHT)
+    expired_by_channel = {}
+    to_remove = []
+    for (cid, key), spawn_time in list(global_next_spawn.items()):
+        if key in ROOM_NAMES:
+            expire = spawn_time + timedelta(hours=2)
+        elif key in BOSS_NAMES:
+            expire = spawn_time + timedelta(minutes=10)
+        else:
+            if key.startswith("PCARD"):
+                expire = spawn_time + timedelta(hours=3)
+            else:
+                expire = spawn_time + timedelta(hours=2, minutes=30)
+        if now >= expire:
+            expired_by_channel.setdefault(cid, []).append((key, spawn_origin_time.get((cid, key), spawn_time)))
+            to_remove.append((cid, key))
+
+    for cid, entries in expired_by_channel.items():
+        channel = bot.get_channel(cid)
+        if not channel:
+            continue
+        lines = []
+        for key, origin in entries:
+            spawned_str = origin.strftime("%I:%M %p") if origin else "Unknown"
+            if key in BOSS_NAMES or key.startswith("PCARD") or key.startswith("BCARD"):
+                last_spawn_record[(cid, key)] = origin or spawn_origin_time.get((cid, key))
+            lines.append(f"- {key.replace('_', ' ')} (Spawned at {spawned_str})")
+        embed = build_embed("❌ Expired Spawns", "The following spawns expired (no update):", {"Expired": "\n".join(lines)}, color=0xE74C3C)
+        exp_msg = await channel.send(embed=embed)
+        asyncio.create_task(delete_later(exp_msg, 300))
+
+    for item in to_remove:
+        cid, key = item
+        global_next_spawn.pop((cid, key), None)
+        spawn_warned.discard((cid, key))
+        card_auto_extended.discard((cid, key))
+        spawn_origin_time.pop((cid, key), None)
+        ch = bot.get_channel(cid)
+        if ch:
+            await update_upcoming_message(ch)
+
+@tasks.loop(minutes=1)
+async def extend_card_time():
+    now = datetime.now(PHT)
+    for (cid, key), spawn_time in list(global_next_spawn.items()):
+        if key.startswith("BCARD"):
+            if (cid, key) in card_auto_extended:
+                continue
+            if now >= spawn_time and (now - spawn_time).total_seconds() < 120:
+                global_next_spawn[(cid, key)] = spawn_time + timedelta(minutes=30)
+                card_auto_extended.add((cid, key))
+                ch = bot.get_channel(cid)
+                if ch:
+                    await update_upcoming_message(ch)
+
+async def delete_later(msg: discord.Message, delay_seconds: int):
+    await asyncio.sleep(delay_seconds)
+    try:
+        await msg.delete()
+    except (discord.NotFound, discord.Forbidden):
+        pass
+
+# ---------------- COMMANDS ----------------
+@bot.command(name="clear")
+@commands.has_permissions(manage_messages=True)
+async def clear_cmd(ctx, amount: int = 20):
+    if ctx.channel.id not in ALLOWED_CHANNELS:
+        return
+    await ctx.channel.purge(limit=amount + 1)
+    notice = await ctx.send(f"Cleared last {amount} messages.")
+    await asyncio.sleep(5)
+    await notice.delete()
+
+@clear_cmd.error
+async def clear_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You need Manage Messages permission to use this command.", delete_after=6)
+
+@bot.command(name="help")
+async def help_cmd(ctx):
+    if ctx.channel.id not in ALLOWED_CHANNELS:
+        return
+    rooms_list = ", ".join([f"{k} ({v})" for k, v in ROOM_NAMES.items()])
+    cards_list = ", ".join([f"{k} ({v})" for k, v in CARD_NAMES.items()])
+    bosses_list = ", ".join([f"{k} ({v})" for k, v in BOSS_NAMES.items()])
+
+    embed = discord.Embed(
+        title="🧭 Command Help — Timer Tracker Bot",
+        description="Here's a quick guide on how to use the bot effectively.",
+        color=GOLD
+    )
+    embed.add_field(
+        name="🎴 Accepted Keywords",
+        value=(
+            f"**Cards:** {cards_list}\n"
+            f"**Rooms:** {rooms_list}\n"
+            f"**Bosses:** {bosses_list}"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="💬 Flexible Input Format",
+        value=(
+            "You can send inputs in **any order**. Examples:\n"
+            "`pcard nuc 12:30am`\n"
+            "`12:30am pcard nuc`\n"
+            "`pcard rb 1:15am`\n"
+            "`bcard crude 2:00pm`\n"
+            "`eg 3:30pm`\n"
+            "`bn 4:00pm`"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="⏱️ Timers",
+        value=(
+            "• **PCARD (Purple Card)** — fixed **3 hours**.\n"
+            "• **BCARD (Blue Card)** — **2.5 hours** (auto-extends +30m if not updated).\n"
+            "• **Rooms** — **2 hours**.\n"
+            "• **Bosses** — **6 hours**, except **Bloodnest (BN)** — **3 hours**."
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🌍 Timezone Support",
+        value="The bot reads your timezone role automatically (PH, IND, MY, RU, US, TH, AU). If no role, defaults to PH.",
+        inline=False
+    )
+    embed.add_field(
+        name="🧹 Clear Command",
+        value="`!clear <amount>` — Deletes recent messages (default: 20). Requires Manage Messages permission.",
+        inline=False
+    )
+    embed.set_footer(text="Timers auto-update and confirmation messages auto-delete.")
+    await ctx.send(embed=embed)
+
+# ---------------- MESSAGE HANDLER ----------------
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or message.channel.id not in ALLOWED_CHANNELS:
+        return
+
+    channel_id = message.channel.id
+    user_tz = get_member_timezone(message.author)
+    user_id = message.author.id
+
+    time_str, category, location = find_time_keyword_location(message.content)
+    if not category:
+        await bot.process_commands(message)
+        return
+
+    if category in ROOM_NAMES:
+        spawn_key = category
+    elif category in BOSS_NAMES:
+        spawn_key = category
+    elif category.startswith("PCARD") or category.startswith("BCARD"):
+        spawn_key = f"{category}_{location}" if location else f"{category}_UNKNOWN"
+    else:
+        spawn_key = category
+
+    taken_time_pht = None
+    if time_str:
+        taken_time_pht = parse_time_string_to_pht(time_str, user_tz)
+    if not taken_time_pht:
+        now_user = datetime.now(user_tz)
+        taken_time_pht = now_user.astimezone(PHT)
+
+    if spawn_key in ROOM_NAMES:
+        duration = 2
+    elif spawn_key in BOSS_NAMES:
+        duration = 6 if spawn_key != "BN" else 3
+    elif spawn_key.startswith("PCARD"):
+        duration = 3
+    elif spawn_key.startswith("BCARD"):
+        duration = 2.5
+    else:
+        duration = 2
+
+    next_spawn = calculate_next_spawn(taken_time_pht, duration)
+    global_next_spawn[(channel_id, spawn_key)] = next_spawn
+    spawn_origin_time[(channel_id, spawn_key)] = taken_time_pht
+    last_spawn_record[(channel_id, spawn_key)] = taken_time_pht
+
+    delta_str = human_readable_delta(next_spawn - datetime.now(PHT))
+    embed = build_embed(
+        "✅ Timer Updated",
+        f"{spawn_key.replace('_',' ')} registered by {message.author.display_name}",
+        {"Next Spawn": f"<t:{unix_ts(next_spawn)}:T> (in {delta_str})"},
+    )
+    confirmation_msg = await message.channel.send(embed=embed)
+    asyncio.create_task(delete_later(confirmation_msg, 20))
+
+    await update_upcoming_message(message.channel)
+    await bot.process_commands(message)
 
 # ---------------- RUN BOT ----------------
 bot.run(os.environ["TOKEN"])
