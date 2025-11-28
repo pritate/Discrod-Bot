@@ -492,5 +492,4 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 # ---------------- RUN BOT ----------------
-TOKEN = os.getenv("DISCORD_TOKEN")  # put your token here if not using env
-bot.run(TOKEN)
+bot.run(os.environ["TOKEN"])
