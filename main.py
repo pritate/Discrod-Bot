@@ -82,7 +82,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ---------------- REGEX / PARSING ----------------
 time_regex = re.compile(r"(?i)(\d{1,2}:\d{2}\s*(?:AM|PM))")
-word_token = re.compile(r"[A-Za-z]+")
+word_token = re.compile(r"([A-Za-z]+)")
 
 # LOCATION_ALIASES now includes ARC and AFC (these are card locations only in CARD_LOCATIONS)
 LOCATION_ALIASES = {
