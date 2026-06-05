@@ -256,7 +256,8 @@ def build_upcoming_embed(channel: discord.TextChannel):
 
         taken = spawn_origin_time.get((cid, key))
         taken_str = taken.strftime("%I:%M %p") if taken else "?"
-        line = f"**{key.replace('_', ' ')}** — spawns <t:{unix_ts(spawn_time)}:R> (taken at {taken_str})"
+        spawn_str = spawn_time.strftime("%I:%M %p").lstrip("0")
+        line = f"**{key.replace('_', ' ')}** — spawns <t:{unix_ts(spawn_time)}:R> (spawns at {spawn_str} PHT)"
 
         if key in ROOM_NAMES:
             rooms.append(line)
