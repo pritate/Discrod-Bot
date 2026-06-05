@@ -67,6 +67,7 @@ ROLE_TIMEZONES = {
 }
 
 # ---------------- TRACKING ---------------- 
+user_sent_times = {}
 global_next_spawn = {}      # (channel_id, spawn_key) -> datetime (PHT)
 spawn_warned = set()        # warned spawns
 upcoming_msg_id = {}        # channel_id -> message id
