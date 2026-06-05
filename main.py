@@ -234,24 +234,20 @@ def unix_ts(dt: datetime) -> int:
 def build_upcoming_embed(channel: discord.TextChannel):
     embed = discord.Embed(title=f"📅 Upcoming Spawns — {channel.name}", color=0x111111)
     rooms, bosses, cards = [], [], []
-
-    now = datetime.now(PHT)
     for (cid, key), spawn_time in list(global_next_spawn.items()):
-        if spawn_time <= now:
+        if cid != channel.id:
             continue
-        ts = unix_ts(spawn_time)
+        now = datetime.now(PHT)
         if key in ROOM_NAMES:
-            rooms.append(f"- {ROOM_NAMES[key]} — <t:{ts}:T> (<t:{ts}:R>)")
+            expire_time = spawn_time + timedelta(hours=2)
         elif key in BOSS_NAMES:
-            bosses.append(f"- {BOSS_NAMES[key]} — <t:{ts}:T> (<t:{ts}:R>)")
-        elif key.startswith("PCARD") or key.startswith("BCARD"):
-            parts = key.split("_", 1)
-            type_k = parts[0]
-            location = parts[1] if len(parts) > 1 else "Unknown"
-            # if it's ARC/AFC or other label, display friendly name where available
-            location_label = CARD_LOCATIONS.get(location, location)
-            cards.append(f"- {CARD_NAMES.get(type_k, type_k)} ({location_label}) — <t:{ts}:T> (<t:{ts}:R>)")
-
+            expire_time = spawn_time + timedelta(minutes=10)
+        elif key.startswith("PCARD"):
+            expire_time = spawn_time + timedelta(hours=3)
+        else:
+            expire_time = spawn_time + timedelta(hours=2, minutes=30)
+        if now >= expire_time:
+    continue
     if rooms:
         embed.add_field(name="🏠 Rooms", value="\n".join(rooms), inline=False)
     if bosses:
