@@ -311,7 +311,7 @@ async def cleanup_expired_messages():
         if key in ROOM_NAMES:
             expire = spawn_time
         elif key in BOSS_NAMES:
-            expire = spawn_time    )
+            expire = spawn_time
         else:
             if key.startswith("PCARD"):
                 expire = spawn_time
