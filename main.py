@@ -247,7 +247,7 @@ def build_upcoming_embed(channel: discord.TextChannel):
         else:
             expire_time = spawn_time + timedelta(hours=2, minutes=30)
         if now >= expire_time:
-    continue
+            continue
     if rooms:
         embed.add_field(name="🏠 Rooms", value="\n".join(rooms), inline=False)
     if bosses:
