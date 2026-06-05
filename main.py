@@ -66,8 +66,7 @@ ROLE_TIMEZONES = {
     "AU": "Australia/Brisbane"
 }
 
-# ---------------- TRACKING ----------------
-user_sent_times = {}        # per-user posted times
+# ---------------- TRACKING ---------------- 
 global_next_spawn = {}      # (channel_id, spawn_key) -> datetime (PHT)
 spawn_warned = set()        # warned spawns
 upcoming_msg_id = {}        # channel_id -> message id
@@ -83,7 +82,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ---------------- REGEX / PARSING ----------------
 time_regex = re.compile(r"(?i)(\d{1,2}:\d{2}\s*(?:AM|PM))")
-word_token = re.compile(r"([A-Za-z]+)")
+word_token = re.compile(r"[A-Za-z]+")
 
 # LOCATION_ALIASES now includes ARC and AFC (these are card locations only in CARD_LOCATIONS)
 LOCATION_ALIASES = {
@@ -138,32 +137,27 @@ def get_member_timezone(member: discord.Member) -> ZoneInfo:
     return PHT
 
 def parse_time_string_to_pht(time_str: str, user_tz: ZoneInfo) -> datetime | None:
-    """
-    Parse a user-provided time (like "6:13 PM") as a datetime in PHT representing
-    when the spawn/taken-time happened.
-
-    Important behavior (fix for 'in 27h' bug):
-    - Construct dt_user on user's 'today'.
-    - If that dt_user is in the future relative to now in user's tz, assume the user meant the previous day (i.e., taken earlier),
-      so subtract one day (this avoids moving a past taken-time forward into the future).
-    - Only after we compute next_spawn we will move next_spawn forward if needed.
-    """
     try:
         parsed = datetime.strptime(time_str.strip().upper(), "%I:%M %p")
     except ValueError:
         return None
 
     now_user = datetime.now(user_tz)
-    # place parsed time on today's date in user's timezone
-    dt_user = now_user.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
 
-    # If the parsed time is in the future relative to the user's now, assume it was earlier (yesterday)
-    if dt_user > now_user:
+    dt_user = datetime(
+        year=now_user.year,
+        month=now_user.month,
+        day=now_user.day,
+        hour=parsed.hour,
+        minute=parsed.minute,
+        tzinfo=user_tz
+    )
+
+    # only move to tomorrow if it's WAY in the future
+    if dt_user > now_user + timedelta(hours=12):
         dt_user -= timedelta(days=1)
 
-    # convert to PHT and return
-    dt_pht = dt_user.astimezone(PHT)
-    return dt_pht
+    return dt_user.astimezone(PHT)
 
 def normalize_token(tok: str) -> str:
     return re.sub(r'[^A-Za-z]', '', tok).upper()
@@ -242,8 +236,8 @@ def build_upcoming_embed(channel: discord.TextChannel):
     rooms, bosses, cards = [], [], []
 
     now = datetime.now(PHT)
-    for (cid, key), spawn_time in global_next_spawn.items():
-        if cid != channel.id:
+    for (cid, key), spawn_time in list(global_next_spawn.items()):
+        if spawn_time <= now:
             continue
         ts = unix_ts(spawn_time)
         if key in ROOM_NAMES:
@@ -315,14 +309,14 @@ async def cleanup_expired_messages():
     to_remove = []
     for (cid, key), spawn_time in list(global_next_spawn.items()):
         if key in ROOM_NAMES:
-            expire = spawn_time + timedelta(hours=2)
+            expire = spawn_time
         elif key in BOSS_NAMES:
-            expire = spawn_time + timedelta(minutes=10)
+            expire = spawn_time    )
         else:
             if key.startswith("PCARD"):
-                expire = spawn_time + timedelta(hours=3)
+                expire = spawn_time
             else:
-                expire = spawn_time + timedelta(hours=2, minutes=30)
+                expire = spawn_time
         if now >= expire:
             expired_by_channel.setdefault(cid, []).append((key, spawn_origin_time.get((cid, key), spawn_time)))
             to_remove.append((cid, key))
